@@ -4,6 +4,8 @@ Created on Thu Jul 16 15:49:36 2020
 
 @author: parkerj12
 """
+import dtale
+import pandas as pd
 import re
 import requests
 import yfinance
@@ -12,14 +14,24 @@ from talib.abstract import *
 import dash
 import dash_core_components as dcc
 import dash_html_components as html
+import dash_table
+from bokeh.models import ColumnDataSource
+from bokeh.models.widgets import DataTable, DateFormatter, TableColumn
+#from bokeh.io import output_file, show, vform
+import datetime
+
+#To do
+#Add Multi Interval Support
+#Add More in depth Backtesting for Strategies.
 class TAdata():
     def __init__(self):
-        self.symbols = []
+        self.symbols = []#['EURUSD=X','ETHUSD=X','BTCUSD=X','GBPUSD=X','AUDUSD=X','NZDUSD=X','EURJPY=X','GBPJPY=X','EURGBP=X','EURCAD=X','EURJPY=X']
         self.token = 'sk_2ddaab04d2914887bf39d40b7b6d0556'
         self.getSymbols()
-        self.indicatordata = {}
+        self.tickerDf = {}
         self.funcs = talib.get_functions()
         self.symboldata = {}
+        self.triggerData = {}
         print(talib.get_functions())
         self.function_map = {
                 'HT_DCPERIOD':HT_DCPERIOD,
@@ -183,26 +195,32 @@ class TAdata():
         
                 }
         self.retrieveTAData()
-        self.checkTriggers()
+        #self.checkTriggers()
+        #self.displaydata()
+        self.backTestPatterns()
     def retrieveTAData(self):
         x=0
         for s in self.symbols:
+            indicatordata = {}
             x=x+1
             print(x)
             tickerData = yfinance.Ticker(s)
-            tickerDf = tickerData.history(period = "max")
-            tickerDf = tickerDf.rename(columns={"Open": "open", "High": "high", "Close": "close","Low" : "low","Volume" : "volume"})
+            try:
+                self.tickerDf[s] = tickerData.history(period = "1y")
+            except:
+                continue
+            self.tickerDf[s] = self.tickerDf[s].rename(columns={"Open": "open", "High": "high", "Close": "close","Low" : "low","Volume" : "volume"})
             
             for f in self.funcs:
                 if(f.count('CDL')==0):
                     continue
                 try:
-                    self.indicatordata[f] = self.function_map[f](tickerDf)
+                    indicatordata[f] = self.function_map[f](self.tickerDf[s])
                 except:
                     continue
-            self.symboldata[s] = self.indicatordata
-            if(x==20):
-                break
+            self.symboldata[s] = indicatordata
+            #if(x==100):
+            #    break
     def getSymbols(self):
         url = "https://cloud.iexapis.com/stable/ref-data/iex/symbols?token="+self.token
         r = requests.get(url)
@@ -215,12 +233,87 @@ class TAdata():
 
         print(len(self.symbols))
     def displaydata(self):
-        data = pd.DataFrame.from_dict(self.symboldata['AA']['CDL2CROWS'])
-        data.plot()
+        #print(self.triggerData)
+        df = pd.DataFrame.from_dict(self.triggerData).T
+        d = dtale.show(df, ignore_duplicate=True)
+        d.open_browser()
+        print(d._url)
+        file1 = open('triggers.txt','w')
+        file1.write(str(self.triggerData))
+
+    def backTestPatterns(self):
+        patternReturns = {}
+        for s in self.symboldata:
+            print(s)
+            for pattern in self.symboldata[s]:
+                if(s == self.symbols[0]):
+                    patternReturns[pattern] = {}
+                    patternReturns[pattern]['POS'] = 0
+                    patternReturns[pattern]['NEG'] = 0
+                    patternReturns[pattern]['DATA'] = 0
+                Postriggers = 0
+                Posreturns = 0
+                Negstriggers = 0
+                Negreturns = 0
+
+                for date, value in self.symboldata[s][pattern].iteritems():
+                    try:
+                        if(value==0):
+                            continue
+                        #print(str(date).split(' ')[0])
+                        #print(str(datetime.datetime.today()).split(' ')[0])
+                        if(str(date).split(' ')[0] == str(datetime.datetime.today()).split(' ')[0]):
+                            continue
+                        
+                        if (value>0):
+                            Postriggers = Postriggers + 1
+                            tickerData = yfinance.Ticker(s)
+                            triggerPrice = self.tickerDf[s].close[str(date)]
+                            nextDayPrice = self.tickerDf[s].close[str(date+datetime.timedelta(days=1)).split(' ')[0]]
+                            Posreturns += (nextDayPrice/triggerPrice-1)*100
+                        if (value<0):
+                            Negstriggers = Negstriggers + 1
+                            tickerData = yfinance.Ticker(s)
+                            triggerPrice = self.tickerDf[s].close[str(date)]
+                            nextDayPrice = self.tickerDf[s].close[str(date+datetime.timedelta(days=1)).split(' ')[0]]
+                            Negreturns += (nextDayPrice/triggerPrice-1)*100
+                    except:
+                        continue
+                if not (Postriggers==0):
+                    patternReturns[pattern]['POS'] += Posreturns/Postriggers
+                    patternReturns[pattern]['DATA'] += Postriggers
+                if not (Negstriggers==0):
+                    patternReturns[pattern]['NEG'] += Negreturns/Negstriggers
+                    patternReturns[pattern]['DATA'] += Negstriggers
+        for pattern in patternReturns:
+            patternReturns[pattern]['POS'] = patternReturns[pattern]['POS']/len(self.symbols)
+            patternReturns[pattern]['NEG'] = patternReturns[pattern]['NEG']/len(self.symbols)
+        df = pd.DataFrame.from_dict(patternReturns).T
+        d = dtale.show(df, ignore_duplicate=True)
+        d.open_browser()
+        print(patternReturns)
     def checkTriggers(self):
         for s in self.symboldata:
+            data = {}
             for pattern in self.symboldata[s]:
-                for date in pattern:
-                    if not (date == 0):
-                        print(s+' Triggered on '+date+' For Pattern '+pattern)
+                print(pattern)
+                data['date '+pattern] = ''
+                data['pattern: '+pattern]= ''
+                data['value '+pattern] = ''  
+                for index, row in self.symboldata[s][pattern].iteritems():
+                    if not (row == 0) and index>=datetime.datetime.today()-datetime.timedelta(days=1):
+                        print(s+' Triggered on '+str(row)+' For Pattern '+pattern+' on '+str(index))
+                        data['date '+pattern] = index
+                        data['pattern: '+pattern]= pattern
+                        data['value '+pattern] = row                                            
+                        self.triggerData[s] = data
+    def sendToMetatrader(self):
+        for s in self.triggerData:
+            for pattern in self.symboldata[s]
+                toWrite = ''+s+' '
+                if(self.triggerData[s]['value '+pattern]>0):
+                    toWrite += 'Buy '
+                else:
+                    toWrite += 'Sell '
+                
 TaData = TAdata()
